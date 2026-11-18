@@ -61,6 +61,10 @@ export interface SmartSearchOutcome {
     baseHeadword: string;
     suffix: string;
   };
+  resolvedCompound?: {
+    queriedForm: string;
+    parts: string[];
+  };
   primaryCorrection?: {
     wrongText: string;
     correctWords: string[];
@@ -231,7 +235,7 @@ export function toLoosePhoneticKey(word: string): string {
     .replace(/[့းှ]/g, "")
     .replace(/ီ/g, "ိ")
     .replace(/ူ/g, "ု")
-    .replace(/iK/g, "K")
+    .replace(/(^|[^aeou])iK/g, "$1K")
     .replace(/[ခဂဃ]/g, "က")
     .replace(/[ဆဇဈသ]/g, "စ")
     .replace(/[ထဒဓဋဌဍဎ]/g, "တ")
@@ -433,7 +437,47 @@ const CLASSIC_MISSPELLINGS: Record<string, { correct: string; reason: string }> 
       correct: "ပတ်သက်",
       reason: "“ပတ်သက်” ဟု ရေးရသည်။",
     },
+    အိမ်မက်: {
+      correct: "အိပ်မက်",
+      reason: "ရှေ့ပုဒ် “အိပ်” (ပသတ်) ဖြင့် “အိပ်မက်” ဟု ရေးရသည်။",
+    },
+    အိမ်မက်မက်: {
+      correct: "အိပ်မက်",
+      reason: "“အိပ်” (ပသတ်) ဖြင့် “အိပ်မက်” ဟု ရေးရသည်။",
+    },
+    စိတ်ဓါတ်: {
+      correct: "စိတ်ဓာတ်",
+      reason: "“ဓ” အက္ခရာနောက်တွင် ရေးချ “ဓာတ်” ဖြင့် “စိတ်ဓာတ်” ဟု ရေးရသည်။",
+    },
   };
+
+function extractSyllableOnsetSignature(syl: string): string {
+  const s = normalizeDiacriticOrder(syl);
+  // Extract leading consonant cluster (base + optional stacked consonant + medial ျ/ြ/ွ)
+  const m = s.match(/^([က-အဥဦဣဤဧဩဪ](?:္[က-အ])?)(ျ|ြ|ွ)?/);
+  if (!m) return s.slice(0, 1);
+  let base = m[1]
+    .replace(/ြ/g, "ျ")
+    .replace(/ရ/g, "ယ")
+    .replace(/ဏ/g, "န")
+    .replace(/ဠ/g, "လ")
+    .replace(/ဿ/g, "သ");
+  const medial = (m[2] ?? "").replace(/ြ/g, "ျ");
+  return base + medial;
+}
+
+function sameSyllableOnsets(aSyls: string[], bSyls: string[]): boolean {
+  if (aSyls.length !== bSyls.length || aSyls.length === 0) return false;
+  for (let i = 0; i < aSyls.length; i++) {
+    if (
+      extractSyllableOnsetSignature(aSyls[i]) !==
+      extractSyllableOnsetSignature(bSyls[i])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function makeNormalizedSet(items: string[]): Set<string> {
   return new Set(items.map((item) => normalizeDiacriticOrder(item)));
@@ -641,6 +685,7 @@ interface OrthographyIndex {
   byStrictPhonetic: Map<string, ExpandedEntry[]>;
   byLoosePhonetic: Map<string, ExpandedEntry[]>;
   byOpenSkeleton: Map<string, ExpandedEntry[]>;
+  byAttestedStrictPhonetic: Map<string, string[]>;
   verifiedKhweCorrectWords: Set<string>;
   attestedValidSpans: Set<string>;
   misspellingMap: Map<
@@ -771,7 +816,9 @@ export function getOrthographyIndex(): OrthographyIndex {
   const byStrictPhonetic = new Map<string, ExpandedEntry[]>();
   const byLoosePhonetic = new Map<string, ExpandedEntry[]>();
   const byOpenSkeleton = new Map<string, ExpandedEntry[]>();
-  const attestedValidSpans = new Set<string>(STANDARD_UNAMBIGUOUS_WORDS);
+  const attestedValidSpans = new Set<string>(
+    STANDARD_UNAMBIGUOUS_WORDS.map(normalizeDiacriticOrder)
+  );
 
   for (const e of entries) {
     addMulti(byExactWord, e.w, e);
@@ -850,6 +897,21 @@ export function getOrthographyIndex(): OrthographyIndex {
     attestedValidSpans.delete(wrongKey);
   }
 
+  const byAttestedStrictPhonetic = new Map<string, string[]>();
+  for (const rawSpan of attestedValidSpans) {
+    const span = normalizeDiacriticOrder(rawSpan);
+    if (misspellingMap.has(span) || CLASSIC_MISSPELLINGS[span]) continue;
+    const syls = splitMyanmarSyllables(span);
+    if (syls.length < 2) continue;
+    const strictKey = toStrictPhoneticKey(span);
+    const arr = byAttestedStrictPhonetic.get(strictKey);
+    if (arr) {
+      if (!arr.includes(span)) arr.push(span);
+    } else {
+      byAttestedStrictPhonetic.set(strictKey, [span]);
+    }
+  }
+
   cachedIndex = {
     entries,
     byExactWord,
@@ -858,6 +920,7 @@ export function getOrthographyIndex(): OrthographyIndex {
     byStrictPhonetic,
     byLoosePhonetic,
     byOpenSkeleton,
+    byAttestedStrictPhonetic,
     verifiedKhweCorrectWords,
     attestedValidSpans,
     misspellingMap,
@@ -1243,6 +1306,7 @@ export function searchOrthography(
 
   let hasExactMatch = false;
   let resolvedInflection: SmartSearchOutcome["resolvedInflection"] | undefined;
+  let resolvedCompound: SmartSearchOutcome["resolvedCompound"] | undefined;
 
   if (exactHits.length > 0) {
     hasExactMatch = true;
@@ -1288,7 +1352,7 @@ export function searchOrthography(
       };
     }
 
-    // 2A. Classic Orthographic Error Table (e.g. ညဏ် -> ဉာဏ်, အဓိပ္ပါယ် -> အဓိပ္ပာယ်, ပြသနာ -> ပြဿနာ)
+    // 2A. Classic Orthographic Error Table (e.g. ညဏ် -> ဉာဏ်, အဓိပ္ပါယ် -> အဓိပ္ပာယ်, ပြသနာ -> ပြဿနာ, အိမ်မက် -> အိပ်မက်)
     const classic = !primaryCorrection ? CLASSIC_MISSPELLINGS[q] : undefined;
     if (classic) {
       const resolved = resolveEntriesForWord(idx, classic.correct);
@@ -1387,7 +1451,7 @@ export function searchOrthography(
       }
     }
 
-    // 2C-2. Inflected / Suffixed Word Recovery (e.g. စဉ်းစားသည် -> စဉ်းစား-, ပတ်ဝန်းကျင်မှာ -> ပတ်ဝန်းကျင်, ပက်ဝန်းကျင်မှာ -> ပတ်ဝန်းကျင်မှာ)
+    // 2C-2. Inflected / Suffixed Word Recovery (e.g. စဉ်းစားသည် -> စဉ်းစား-, ပတ်ဝန်းကျင်မှာ -> ပတ်ဝန်းကျင်, မင်္ဂလာပါ -> မင်္ဂလာ)
     if (resultMap.size === 0 && !primaryCorrection && qSyllables.length >= 2) {
       for (const suf of TRAILING_GRAMMAR_SUFFIXES) {
         if (q.length > suf.length + 1 && q.endsWith(suf)) {
@@ -1416,8 +1480,35 @@ export function searchOrthography(
             break;
           }
 
+          if (stemSyls.length >= 2 && idx.attestedValidSpans.has(stem)) {
+            const prefixMatches = idx.entries
+              .filter((e) => e.w.startsWith(stem))
+              .slice(0, 4);
+            if (prefixMatches.length > 0) {
+              hasExactMatch = true;
+              resolvedInflection = {
+                queriedForm: q,
+                baseHeadword: stem,
+                suffix: suf,
+              };
+              for (const e of prefixMatches) {
+                addCandidate(
+                  e,
+                  "inflected_exact",
+                  968,
+                  `သတ်ပုံကျမ်းဝင် စကားတွဲ (နောက်ဆက် “${suf}” တွဲလျက်)`
+                );
+              }
+              break;
+            }
+          }
+
           // Check if the stem itself is a known misspelling or strict homophone of a headword!
-          const stemErr = checkSyllableSpanError(idx, stemSyls, splitMyanmarSyllables(suf));
+          const stemErr = checkSyllableSpanError(
+            idx,
+            stemSyls,
+            splitMyanmarSyllables(suf)
+          );
           if (stemErr && stemErr.suggestions.length > 0) {
             const correctedStem = stemErr.suggestions[0];
             const correctedFull = correctedStem + suf;
@@ -1448,7 +1539,7 @@ export function searchOrthography(
       }
     }
 
-    // 2D. Phonetic & Attested Prefix Resolution
+    // 2D. Phonetic & Same-Onset Single-Edit Resolution
     const qStrict = toStrictPhoneticKey(q);
     const qOpen = toOpenVowelSkeleton(q);
     const qLoose = toLoosePhoneticKey(q);
@@ -1471,6 +1562,66 @@ export function searchOrthography(
       }
     }
 
+    // 2D-1b. Attested Multi-Syllable Stem Strict Homophone Recovery (e.g. အိပ်ယာ -> အိပ်ရာ from အိပ်ရာလိပ်)
+    if (
+      resultMap.size === 0 &&
+      !idx.attestedValidSpans.has(q) &&
+      qSyllables.length >= 2
+    ) {
+      const attestedStrictMatches = (
+        idx.byAttestedStrictPhonetic.get(qStrict) ?? []
+      )
+        .filter(
+          (cand) =>
+            cand !== q &&
+            !idx.misspellingMap.has(cand) &&
+            !CLASSIC_MISSPELLINGS[cand] &&
+            splitMyanmarSyllables(cand).length === qSyllables.length &&
+            editDistance(q, cand, 3) <= 2
+        )
+        .sort((a, b) => {
+          const da = editDistance(q, a, 3);
+          const db = editDistance(q, b, 3);
+          if (da !== db) return da - db;
+          return Number(idx.byExactWord.has(b)) - Number(idx.byExactWord.has(a));
+        });
+
+      if (attestedStrictMatches.length > 0) {
+        const bestAttested = attestedStrictMatches[0];
+        let matchedEntries = resolveEntriesForWord(idx, bestAttested);
+        if (matchedEntries.length === 0) {
+          matchedEntries = idx.entries
+            .filter((e) => e.w.startsWith(bestAttested))
+            .slice(0, 4);
+        }
+        if (matchedEntries.length === 0) {
+          matchedEntries = idx.entries
+            .filter((e) => e.w.includes(bestAttested))
+            .slice(0, 4);
+        }
+        for (const e of matchedEntries) {
+          const dist = editDistance(q, bestAttested, 3);
+          addCandidate(
+            e,
+            "phonetic",
+            915 - dist * 10,
+            `“${bestAttested}” ပါဝင်သော အသံထွက်တူ သတ်ပုံအမှန်`,
+            computeSpellingDiff(q, e.w)
+          );
+        }
+        if (!primaryCorrection) {
+          primaryCorrection = {
+            wrongText: q,
+            correctWords: attestedStrictMatches.slice(0, 3),
+            sourceType: "phonetic_auto",
+            explanation: `ရှာဖွေထားသော “${q}” အစား သတ်ပုံကျမ်းဝင် အသံထွက်တူ “${bestAttested}” ဟု ရေးသားရပါမည်။`,
+            primaryEntry: matchedEntries[0],
+            diff: computeSpellingDiff(q, bestAttested),
+          };
+        }
+      }
+    }
+
     if (resultMap.size === 0 && !idx.attestedValidSpans.has(q)) {
       const openMatches = idx.byOpenSkeleton.get(qOpen) ?? [];
       for (const e of openMatches) {
@@ -1482,6 +1633,31 @@ export function searchOrthography(
           "သရ・ဗျည်းတွဲ အသံတူ သတ်ပုံအမှန်",
           computeSpellingDiff(q, e.w)
         );
+      }
+    }
+
+    // Same-Onset 1-Character Spelling Error Recovery (e.g. nasal/stop or tone swap like အိမ်မက် -> အိပ်မက်)
+    if (
+      resultMap.size === 0 &&
+      !idx.attestedValidSpans.has(q) &&
+      qSyllables.length >= 2
+    ) {
+      for (const e of idx.entries) {
+        if (e.syllableCount !== qSyllables.length) continue;
+        if (Math.abs(e.w.length - q.length) > 2) continue;
+        const rawDist = editDistance(q, e.w, 1);
+        if (rawDist === 1) {
+          const eSyls = splitMyanmarSyllables(e.w);
+          if (sameSyllableOnsets(qSyllables, eSyls)) {
+            addCandidate(
+              e,
+              "phonetic",
+              905,
+              "အနီးစပ်ဆုံး သတ်ပုံအမှန်",
+              computeSpellingDiff(q, e.w)
+            );
+          }
+        }
       }
     }
 
@@ -1500,7 +1676,7 @@ export function searchOrthography(
       }
     }
 
-    if (resultMap.size === 0) {
+    if (resultMap.size === 0 && !idx.attestedValidSpans.has(q)) {
       const looseMatches = idx.byLoosePhonetic.get(qLoose) ?? [];
       for (const e of looseMatches) {
         const dist = editDistance(q, e.w, 6);
@@ -1511,6 +1687,82 @@ export function searchOrthography(
           "အသံနီးစပ်သော သတ်ပုံအမှန်",
           computeSpellingDiff(q, e.w)
         );
+      }
+    }
+
+    // 2D-3. Valid Compound Word Decomposition (e.g. မြေကွက် -> မြေ + ကွက်, အိမ်ခန်း -> အိမ် + ခန်း, စာအုပ်စင် -> စာအုပ် + စင်)
+    // Runs AFTER explicit error & phonetic checks so valid compounds NEVER falsely trigger medial/consonant fuzzy errors!
+    if (resultMap.size === 0 && qSyllables.length >= 2) {
+      let bestParts: string[] | null = null;
+      const isValidCompoundPart = (span: string, sylCount: number): boolean => {
+        if (idx.misspellingMap.has(span) || Boolean(CLASSIC_MISSPELLINGS[span])) {
+          return false;
+        }
+        if (idx.byExactWord.has(span) || idx.byExpandedUsage.has(span)) {
+          return true;
+        }
+        if (sylCount >= 2 && idx.attestedValidSpans.has(span)) {
+          return true;
+        }
+        return false;
+      };
+
+      // Try 2-part split first (prefer longest left exact headword)
+      for (let splitAt = qSyllables.length - 1; splitAt >= 1; splitAt--) {
+        const leftPart = normalizeDiacriticOrder(
+          qSyllables.slice(0, splitAt).join("")
+        );
+        const rightPart = normalizeDiacriticOrder(
+          qSyllables.slice(splitAt).join("")
+        );
+        if (
+          isValidCompoundPart(leftPart, splitAt) &&
+          isValidCompoundPart(rightPart, qSyllables.length - splitAt)
+        ) {
+          bestParts = [leftPart, rightPart];
+          break;
+        }
+      }
+
+      // If no 2-part split, try 3-part split for longer compounds
+      if (!bestParts && qSyllables.length >= 3 && qSyllables.length <= 7) {
+        outer: for (let s1 = qSyllables.length - 2; s1 >= 1; s1--) {
+          const p1 = normalizeDiacriticOrder(qSyllables.slice(0, s1).join(""));
+          if (!isValidCompoundPart(p1, s1)) continue;
+          for (let s2 = qSyllables.length - 1; s2 > s1; s2--) {
+            const p2 = normalizeDiacriticOrder(qSyllables.slice(s1, s2).join(""));
+            const p3 = normalizeDiacriticOrder(qSyllables.slice(s2).join(""));
+            if (
+              isValidCompoundPart(p2, s2 - s1) &&
+              isValidCompoundPart(p3, qSyllables.length - s2)
+            ) {
+              bestParts = [p1, p2, p3];
+              break outer;
+            }
+          }
+        }
+      }
+
+      if (bestParts) {
+        hasExactMatch = true;
+        resolvedCompound = {
+          queriedForm: q,
+          parts: bestParts,
+        };
+        bestParts.forEach((part, pIdx) => {
+          const exactPartEntries = resolveEntriesForWord(idx, part);
+          const chosen = exactPartEntries.length
+            ? exactPartEntries.slice(0, 1)
+            : idx.entries.filter((e) => e.w.startsWith(part)).slice(0, 1);
+          for (const e of chosen) {
+            addCandidate(
+              e,
+              "exact",
+              940 - pIdx * 5,
+              `ပေါင်းစပ်စကားလုံး အစိတ်အပိုင်း (“${part}”)`
+            );
+          }
+        });
       }
     }
 
@@ -1543,21 +1795,30 @@ export function searchOrthography(
     if (resultMap.size === 0 && !idx.attestedValidSpans.has(q) && qLoose.length >= 3) {
       const maxAllowed = 1;
       for (const e of idx.entries) {
+        if (qSyllables.length >= 2 && e.syllableCount !== qSyllables.length) {
+          continue;
+        }
         if (Math.abs(e.loosePhonetic.length - qLoose.length) > maxAllowed) {
           continue;
         }
+        const rawDist = editDistance(q, e.w, 2);
+        if (rawDist > 2) continue;
+
+        const eSyls = splitMyanmarSyllables(e.w);
+        const sameFirstOnset =
+          extractSyllableOnsetSignature(qSyllables[0] ?? "") ===
+          extractSyllableOnsetSignature(eSyls[0] ?? "");
         const pDist = editDistance(qLoose, e.loosePhonetic, maxAllowed);
-        if (pDist <= maxAllowed) {
-          const rawDist = editDistance(q, e.w, 3);
-          if (rawDist <= 3) {
-            addCandidate(
-              e,
-              "fuzzy",
-              620 - pDist * 40 - rawDist * 10,
-              "အနီးစပ်ဆုံး သတ်ပုံအမှန်",
-              computeSpellingDiff(q, e.w)
-            );
-          }
+        if (pDist <= maxAllowed || (rawDist === 1 && sameFirstOnset)) {
+          const onsetMatchAll = sameSyllableOnsets(qSyllables, eSyls);
+          const onsetScore = onsetMatchAll ? 90 : sameFirstOnset ? 20 : -80;
+          addCandidate(
+            e,
+            "fuzzy",
+            540 + onsetScore - pDist * 40 - rawDist * 15,
+            "အနီးစပ်ဆုံး သတ်ပုံအမှန်",
+            computeSpellingDiff(q, e.w)
+          );
         }
       }
     }
@@ -1582,11 +1843,17 @@ export function searchOrthography(
 
   if (!hasExactMatch && !primaryCorrection && sortedResults.length > 0) {
     const top = sortedResults[0];
+    const topSyls = splitMyanmarSyllables(top.entry.w);
+    const fuzzySafeToPromote =
+      top.matchKind === "fuzzy" &&
+      editDistance(q, top.entry.w, 1) <= 1 &&
+      sameSyllableOnsets(qSyllables, topSyls);
+
     if (
       top.matchKind === "phonetic" ||
       top.matchKind === "khwe_correction" ||
       top.matchKind === "tat_ta_rule" ||
-      (top.matchKind === "fuzzy" && top.score >= 560)
+      fuzzySafeToPromote
     ) {
       const topAlts = sortedResults
         .filter(
@@ -1654,6 +1921,7 @@ export function searchOrthography(
     wasZawgyi,
     hasExactMatch,
     resolvedInflection,
+    resolvedCompound,
     primaryCorrection,
     results: sortedResults,
     homophoneAlternatives,
@@ -1781,6 +2049,33 @@ function checkSyllableSpanError(
         bookPage: candidates[0].p,
       };
     }
+
+    const attestedStrict = (idx.byAttestedStrictPhonetic.get(strictKey) ?? [])
+      .filter(
+        (cand) =>
+          cand !== span &&
+          !idx.misspellingMap.has(cand) &&
+          !CLASSIC_MISSPELLINGS[cand] &&
+          splitMyanmarSyllables(cand).length === spanSyls.length &&
+          editDistance(span, cand, 3) <= 2
+      )
+      .sort((a, b) => editDistance(span, a, 3) - editDistance(span, b, 3));
+
+    if (attestedStrict.length > 0) {
+      const best = attestedStrict[0];
+      const hostEntry =
+        resolveEntriesForWord(idx, best)[0] ??
+        idx.entries.find((e) => e.w.startsWith(best)) ??
+        idx.entries.find((e) => e.w.includes(best));
+      return {
+        suggestions: attestedStrict.slice(0, 3),
+        status: "suggestion",
+        reason: hostEntry
+          ? `သတ်ပုံကျမ်းဝင် “${hostEntry.displayHeadword}” ပါ အသံထွက်တူ “${best}” ဖြင့် တိုက်ဆိုင်အကြံပြုထားပါသည်။`
+          : "သတ်ပုံကျမ်းဝင် အသံထွက်တူ ရေးထုံးအမှန်ဖြင့် တိုက်ဆိုင်အကြံပြုထားပါသည်။",
+        bookPage: hostEntry?.p,
+      };
+    }
   }
 
   return null;
@@ -1870,13 +2165,13 @@ export function checkPhraseOrthography(rawText: string): PhraseCheckToken[] {
           break;
         }
 
-        // If this multi-syllable span is itself a known valid word/headword (and not a misspelling), consume it as valid!
+        // If this multi-syllable span is itself a known valid word/stem (and not a misspelling), consume it as valid!
         if (
           len >= 2 &&
           (idx.byExactWord.has(subStr) ||
             idx.byExpandedUsage.has(subStr) ||
             idx.verifiedKhweCorrectWords.has(subStr) ||
-            STANDARD_UNAMBIGUOUS_WORDS.includes(subStr)) &&
+            idx.attestedValidSpans.has(subStr)) &&
           !idx.misspellingMap.has(subStr) &&
           !CLASSIC_MISSPELLINGS[subStr]
         ) {

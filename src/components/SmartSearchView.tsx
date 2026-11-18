@@ -331,6 +331,21 @@ export const SmartSearchView: React.FC<SmartSearchViewProps> = ({
                       </span>{" "}
                       ဖြစ်ပါသည်။
                     </p>
+                  ) : outcome.resolvedCompound ? (
+                    <p className="mm-text text-sm text-neutral-800">
+                      <span className="font-bold text-neutral-950">
+                        “{outcome.resolvedCompound.queriedForm}”
+                      </span>{" "}
+                      သည် သတ်ပုံကျမ်းဝင်{" "}
+                      <span className="font-bold text-neutral-950">
+                        “{outcome.resolvedCompound.parts.join(" + ")}”
+                      </span>{" "}
+                      ပေါင်းစပ်ထားသော{" "}
+                      <span className="font-semibold text-emerald-800">
+                        သတ်ပုံအမှန်
+                      </span>{" "}
+                      ဖြစ်ပါသည်။
+                    </p>
                   ) : (
                     <p className="mm-text text-sm text-neutral-800">
                       <span className="font-bold text-neutral-950">

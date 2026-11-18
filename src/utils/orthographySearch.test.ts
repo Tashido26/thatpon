@@ -348,3 +348,52 @@ test("homophone quick-switch alternatives return strict tone-preserving homophon
   assert.ok(altWords.includes("ခြည်"));
 });
 
+test("attested prefix homophone misspellings like အိပ်ယာ -> အိပ်ရာ are caught instead of false compound match", () => {
+  const validBed = searchOrthography("အိပ်ရာ");
+  assert.equal(validBed.hasExactMatch, true);
+  assert.equal(validBed.primaryCorrection, undefined);
+  assert.ok(validBed.results.some((r) => r.entry.w === "အိပ်ရာလိပ်"));
+
+  const wrongBed = searchOrthography("အိပ်ယာ");
+  assert.equal(wrongBed.hasExactMatch, false);
+  assert.equal(wrongBed.resolvedCompound, undefined);
+  assert.ok(wrongBed.primaryCorrection);
+  assert.equal(wrongBed.primaryCorrection.correctWords[0], "အိပ်ရာ");
+  assert.equal(wrongBed.results[0].entry.w, "အိပ်ရာလိပ်");
+
+  const bedParaFlags = checkPhraseOrthography("အိပ်ယာက ထပြီ။").filter(
+    (t) => t.status === "correction" || t.status === "suggestion"
+  );
+  assert.equal(bedParaFlags.length, 1);
+  assert.equal(bedParaFlags[0].raw, "အိပ်ယာ");
+  assert.equal(bedParaFlags[0].suggestions[0], "အိပ်ရာ");
+
+  const validBedParaFlags = checkPhraseOrthography("အိပ်ရာက ထပြီ။").filter(
+    (t) => t.status === "correction" || t.status === "suggestion"
+  );
+  assert.deepEqual(validBedParaFlags, []);
+});
+
+test("single-edit nasal/stop errors and valid compound nouns resolve accurately", () => {
+  const dream = searchOrthography("အိမ်မက်");
+  assert.equal(dream.hasExactMatch, false);
+  assert.ok(dream.primaryCorrection);
+  assert.equal(dream.primaryCorrection.correctWords[0], "အိပ်မက်");
+  assert.equal(dream.results[0].entry.w, "အိပ်မက်");
+
+  const spirit = searchOrthography("စိတ်ဓါတ်");
+  assert.equal(spirit.hasExactMatch, false);
+  assert.ok(spirit.primaryCorrection);
+  assert.equal(spirit.primaryCorrection.correctWords[0], "စိတ်ဓာတ်");
+
+  const landPlot = searchOrthography("မြေကွက်");
+  assert.equal(landPlot.hasExactMatch, true);
+  assert.equal(landPlot.primaryCorrection, undefined);
+  assert.deepEqual(landPlot.resolvedCompound?.parts, ["မြေ", "ကွက်"]);
+
+  const room = searchOrthography("အိမ်ခန်း");
+  assert.equal(room.hasExactMatch, true);
+  assert.equal(room.primaryCorrection, undefined);
+  assert.deepEqual(room.resolvedCompound?.parts, ["အိမ်", "ခန်း"]);
+});
+
