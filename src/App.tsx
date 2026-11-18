@@ -259,7 +259,7 @@ export default function App() {
             {orthographyDataset.meta.publisher} · {orthographyDataset.meta.title} (
             {orthographyDataset.meta.edition})
           </p>
-          <div className="mm-text flex flex-wrap items-center justify-center gap-2.5 whitespace-nowrap">
+          <div className="mm-text flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 sm:justify-end">
             <button
               type="button"
               onClick={() => setIsDrawerOpen(true)}
@@ -267,6 +267,21 @@ export default function App() {
             >
               ရှာဖွေမှတ်တမ်း ({history.length})
             </button>
+            <span aria-hidden="true" className="text-neutral-300">
+              ·
+            </span>
+            <span
+              title={
+                __APP_COMMIT__
+                  ? `Version ${__APP_VERSION__} (${__APP_COMMIT__}) · Updated ${__APP_BUILD_DATE__}`
+                  : `Version ${__APP_VERSION__} · Updated ${__APP_BUILD_DATE__}`
+              }
+              className="tabular-nums text-neutral-500"
+            >
+              v{__APP_VERSION__}
+              {__APP_COMMIT__ ? `+${__APP_COMMIT__}` : ""} · Updated{" "}
+              {__APP_BUILD_DATE__}
+            </span>
             <span aria-hidden="true" className="text-neutral-300">
               ·
             </span>

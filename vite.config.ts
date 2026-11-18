@@ -1,11 +1,42 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import {execSync} from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
+  const pkgJson = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')
+  ) as {version?: string};
+  const appVersion = pkgJson.version || '1.0.0';
+
+  let gitCommit = (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7);
+  if (!gitCommit) {
+    try {
+      gitCommit = execSync('git rev-parse --short HEAD', {
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .toString()
+        .trim();
+    } catch {
+      gitCommit = '';
+    }
+  }
+
+  const buildDate = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Yangon',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(new Date());
+
   return {
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+      __APP_COMMIT__: JSON.stringify(gitCommit),
+      __APP_BUILD_DATE__: JSON.stringify(buildDate),
+    },
     plugins: [
       react(),
       tailwindcss(),
