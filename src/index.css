@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-myanmar: "Noto Sans Myanmar", "Padauk", "Myanmar Text", sans-serif;
+    --font-sans: "Plus Jakarta Sans", "Noto Sans Myanmar", "Padauk", sans-serif;
+    --font-mono: "JetBrains Mono", monospace;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    background-color: #ffffff;
+    color: #0a0a0a;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    line-height: 1.85;
+    font-feature-settings: "kern" 1;
+  }
+}
+
+.mm-text {
+  font-family: var(--font-myanmar);
+  line-height: 1.9;
+}
+
+.mm-display {
+  font-family: var(--font-myanmar);
+  line-height: 1.65;
+  text-wrap: balance;
+}
+
+.num-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
